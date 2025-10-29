@@ -16,11 +16,15 @@
 
 package com.example.android.architecture.blueprints.todoapp.tasks
 
+import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -52,13 +56,95 @@ import javax.inject.Inject
 interface TasksUiState {
     val items: List<Task>
     val isLoading: Boolean
-    val filteringUiInfo: FilteringUiInfo
     val userMessage: Int?
 }
 
-/**
- * ViewModel for the task list screen.
- */
+/** Obtains the [TasksUiState]. */
+// NOTE(step): An alternative factorization would be make the properties on [TasksUiState] into
+// @Composable functions. Then you can obtain an instance of TasksUiState without needing to be
+// @Composable. Perhaps I would prefer that.
+@Composable
+fun rememberTasksUiState(vm: TasksViewModel = hiltViewModel()): TasksUiState {
+    val tasksAsyncState = vm.tasksAsyncFlow.collectAsStateWithLifecycle()
+    return remember(vm, tasksAsyncState) { TasksUiStateImpl(vm) { tasksAsyncState.value } }
+}
+
+/** Interprets how to display state from the [TasksViewModel]. */
+private class TasksUiStateImpl(
+    val vm: TasksViewModel,
+    val tasksAsync: () -> Async<List<Task>>
+): TasksUiState {
+    override val isLoading: Boolean
+        // NOTE(step): I find this easier to reason about than lines 81 and 90 of
+        // https://github.com/android/architecture-samples/blob/ee66e1526b84c026615df032c705842b7d2a521f/app/src/main/java/com/example/android/architecture/blueprints/todoapp/tasks/TasksViewModel.kt#L81
+        get() = tasksAsync() is Async.Loading || vm.isLoading
+
+    override val userMessage: Int?
+        get() = when (val tasks = tasksAsync()) {
+            // NOTE(step): This is the current logic, but I don't think it's correct to suppress
+            // the userMessage. Not when the screen calls `currentOnUserMessageDisplayed()` as
+            // though setting the userMessage is enough to display it.
+            is Async.Loading -> null
+            is Async.Error -> tasks.errorMessage
+            is Async.Success -> vm.userMessage
+        }
+
+    override val items: List<Task>
+        get() =
+            when (val allItems = tasksAsync()) {
+                is Async.Success -> filterTasks(allItems.data, vm.filterType)
+                else -> emptyList()
+            }
+}
+
+/** Returns the message ID corresponding to the edit result ID. */
+@StringRes fun editResultMessage(result: Int): Int? =
+    when (result) {
+        EDIT_RESULT_OK -> R.string.successfully_saved_task_message
+        ADD_EDIT_RESULT_OK -> R.string.successfully_added_task_message
+        DELETE_RESULT_OK -> R.string.successfully_deleted_task_message
+        else -> null
+    }
+
+@Composable
+fun TasksFilterType.currentFilteringLabel() = stringResource(when(this) {
+    ALL_TASKS -> R.string.label_all
+    ACTIVE_TASKS -> R.string.label_active
+    COMPLETED_TASKS -> R.string.label_completed
+})
+
+@Composable
+fun TasksFilterType.noTasksLabel() = stringResource(when(this) {
+    ALL_TASKS -> R.string.no_tasks_all
+    ACTIVE_TASKS -> R.string.no_tasks_active
+    COMPLETED_TASKS -> R.string.no_tasks_completed
+})
+
+@Composable
+fun TasksFilterType.noTasksIconPainter() = painterResource(when(this) {
+    ALL_TASKS -> R.drawable.logo_no_fill
+    ACTIVE_TASKS -> R.drawable.ic_check_circle_96dp
+    COMPLETED_TASKS -> R.drawable.ic_verified_user_96dp
+})
+
+private fun filterTasks(tasks: List<Task>, filteringType: TasksFilterType): List<Task> {
+    val tasksToShow = ArrayList<Task>()
+    // We filter the tasks based on the requestType
+    for (task in tasks) {
+        when (filteringType) {
+            ALL_TASKS -> tasksToShow.add(task)
+            ACTIVE_TASKS -> if (task.isActive) {
+                tasksToShow.add(task)
+            }
+            COMPLETED_TASKS -> if (task.isCompleted) {
+                tasksToShow.add(task)
+            }
+        }
+    }
+    return tasksToShow
+}
+
+/** Holder of fragment-retained state for the Tasks UI. */
 @OptIn(SavedStateHandleSaveableApi::class)
 @HiltViewModel
 class TasksViewModel @Inject constructor(
@@ -69,7 +155,6 @@ class TasksViewModel @Inject constructor(
     var filterType: TasksFilterType by savedStateHandle.saveable { mutableStateOf(ALL_TASKS) }
 
     var userMessage: Int? by mutableStateOf(null)
-        private set
 
     var isLoading: Boolean by mutableStateOf(false)
         private set
@@ -78,38 +163,6 @@ class TasksViewModel @Inject constructor(
         .map { Async.Success(it) }
         .catch<Async<List<Task>>> { emit(Async.Error(R.string.loading_tasks_error)) }
         .stateIn(viewModelScope, WhileUiSubscribed, initialValue = Async.Loading)
-
-    @Composable
-    fun uiState(): TasksUiState {
-        val tasksAsync by tasksAsyncFlow.collectAsStateWithLifecycle()
-        return remember { UiState(tasksAsync = { tasksAsync }) }
-    }
-
-    /** This is the UI state logic, which we only want to execute when the UI is present. */
-    private inner class UiState(
-        val tasksAsync: () -> Async<List<Task>>
-    ): TasksUiState {
-        override val isLoading: Boolean
-            get() = this@TasksViewModel.isLoading
-
-        override val userMessage: Int?
-            get() = when (val tasks = tasksAsync()) {
-                is Async.Loading -> null
-                is Async.Error -> tasks.errorMessage
-                is Async.Success ->
-                this@TasksViewModel.userMessage
-            }
-
-        override val items: List<Task>
-            get() =
-                when (val allItems = tasksAsync()) {
-                    is Async.Success -> filterTasks(allItems.data, filterType)
-                    else -> emptyList()
-                }
-
-        override val filteringUiInfo: FilteringUiInfo
-            get() = getFilterUiInfo(filterType)
-    }
 
     fun clearCompletedTasks() {
         viewModelScope.launch {
@@ -129,24 +182,6 @@ class TasksViewModel @Inject constructor(
         }
     }
 
-    fun showEditResultMessage(result: Int) {
-        when (result) {
-            EDIT_RESULT_OK -> {
-                userMessage = R.string.successfully_saved_task_message
-            }
-            ADD_EDIT_RESULT_OK -> {
-                userMessage = R.string.successfully_added_task_message
-            }
-            DELETE_RESULT_OK -> {
-                userMessage = R.string.successfully_deleted_task_message
-            }
-        }
-    }
-
-    fun snackbarMessageShown() {
-        userMessage = null
-    }
-
     fun refresh() {
         isLoading = true
         viewModelScope.launch {
@@ -154,50 +189,4 @@ class TasksViewModel @Inject constructor(
             isLoading = false
         }
     }
-
-    private fun filterTasks(tasks: List<Task>, filteringType: TasksFilterType): List<Task> {
-        val tasksToShow = ArrayList<Task>()
-        // We filter the tasks based on the requestType
-        for (task in tasks) {
-            when (filteringType) {
-                ALL_TASKS -> tasksToShow.add(task)
-                ACTIVE_TASKS -> if (task.isActive) {
-                    tasksToShow.add(task)
-                }
-                COMPLETED_TASKS -> if (task.isCompleted) {
-                    tasksToShow.add(task)
-                }
-            }
-        }
-        return tasksToShow
-    }
-
-    // TODO: move this to the UI, or make it @Composable
-    private fun getFilterUiInfo(requestType: TasksFilterType): FilteringUiInfo =
-        when (requestType) {
-            ALL_TASKS -> {
-                FilteringUiInfo(
-                    R.string.label_all, R.string.no_tasks_all,
-                    R.drawable.logo_no_fill
-                )
-            }
-            ACTIVE_TASKS -> {
-                FilteringUiInfo(
-                    R.string.label_active, R.string.no_tasks_active,
-                    R.drawable.ic_check_circle_96dp
-                )
-            }
-            COMPLETED_TASKS -> {
-                FilteringUiInfo(
-                    R.string.label_completed, R.string.no_tasks_completed,
-                    R.drawable.ic_verified_user_96dp
-                )
-            }
-        }
 }
-
-data class FilteringUiInfo(
-    val currentFilteringLabel: Int = R.string.label_all,
-    val noTasksLabel: Int = R.string.no_tasks_all,
-    val noTaskIconRes: Int = R.drawable.logo_no_fill,
-)

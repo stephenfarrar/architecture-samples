@@ -259,7 +259,7 @@ class TasksScreenTest {
                 Surface {
                     TasksScreen(
                         viewModel = TasksViewModel(repository, SavedStateHandle()),
-                        userMessage = R.string.successfully_added_task_message,
+                        userMessageKey = R.string.successfully_added_task_message,
                         onUserMessageDisplayed = { },
                         onAddTask = { },
                         onTaskClick = { },

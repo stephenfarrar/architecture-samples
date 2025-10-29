@@ -16,8 +16,6 @@
 
 package com.example.android.architecture.blueprints.todoapp.tasks
 
-import androidx.annotation.DrawableRes
-import androidx.annotation.StringRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -48,7 +46,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.dimensionResource
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
@@ -65,7 +62,7 @@ import com.example.android.architecture.blueprints.todoapp.util.TasksTopAppBar
 
 @Composable
 fun TasksScreen(
-    @StringRes userMessage: Int,
+    userMessageKey: Int,
     onAddTask: () -> Unit,
     onTaskClick: (Task) -> Unit,
     onUserMessageDisplayed: () -> Unit,
@@ -93,14 +90,12 @@ fun TasksScreen(
             }
         }
     ) { paddingValues ->
-        val uiState = viewModel.uiState()
+        val uiState = rememberTasksUiState()
 
         TasksContent(
             loading = uiState.isLoading,
             tasks = uiState.items,
-            currentFilteringLabel = uiState.filteringUiInfo.currentFilteringLabel,
-            noTasksLabel = uiState.filteringUiInfo.noTasksLabel,
-            noTasksIconRes = uiState.filteringUiInfo.noTaskIconRes,
+            filterType = viewModel.filterType,
             onRefresh = viewModel::refresh,
             onTaskClick = onTaskClick,
             onTaskCheckedChange = viewModel::completeTask,
@@ -112,15 +107,16 @@ fun TasksScreen(
             val snackbarText = stringResource(message)
             LaunchedEffect(snackbarHostState, viewModel, message, snackbarText) {
                 snackbarHostState.showSnackbar(snackbarText)
-                viewModel.snackbarMessageShown()
+                viewModel.userMessage = null
             }
         }
 
         // Check if there's a userMessage to show to the user
         val currentOnUserMessageDisplayed by rememberUpdatedState(onUserMessageDisplayed)
+        val userMessage = editResultMessage(userMessageKey)
         LaunchedEffect(userMessage) {
-            if (userMessage != 0) {
-                viewModel.showEditResultMessage(userMessage)
+            if (userMessage != null) {
+                viewModel.userMessage = userMessage
                 currentOnUserMessageDisplayed()
             }
         }
@@ -131,9 +127,7 @@ fun TasksScreen(
 private fun TasksContent(
     loading: Boolean,
     tasks: List<Task>,
-    @StringRes currentFilteringLabel: Int,
-    @StringRes noTasksLabel: Int,
-    @DrawableRes noTasksIconRes: Int,
+    filterType: TasksFilterType,
     onRefresh: () -> Unit,
     onTaskClick: (Task) -> Unit,
     onTaskCheckedChange: (Task, Boolean) -> Unit,
@@ -142,7 +136,7 @@ private fun TasksContent(
     LoadingContent(
         loading = loading,
         empty = tasks.isEmpty() && !loading,
-        emptyContent = { TasksEmptyContent(noTasksLabel, noTasksIconRes, modifier) },
+        emptyContent = { TasksEmptyContent(filterType, modifier) },
         onRefresh = onRefresh
     ) {
         Column(
@@ -151,7 +145,7 @@ private fun TasksContent(
                 .padding(horizontal = dimensionResource(id = R.dimen.horizontal_margin))
         ) {
             Text(
-                text = stringResource(currentFilteringLabel),
+                text = filterType.currentFilteringLabel(),
                 modifier = Modifier.padding(
                     horizontal = dimensionResource(id = R.dimen.list_item_padding),
                     vertical = dimensionResource(id = R.dimen.vertical_margin)
@@ -208,8 +202,7 @@ private fun TaskItem(
 
 @Composable
 private fun TasksEmptyContent(
-    @StringRes noTasksLabel: Int,
-    @DrawableRes noTasksIconRes: Int,
+    filterType: TasksFilterType,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -218,11 +211,11 @@ private fun TasksEmptyContent(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Image(
-            painter = painterResource(id = noTasksIconRes),
+            painter = filterType.noTasksIconPainter(),
             contentDescription = stringResource(R.string.no_tasks_image_content_description),
             modifier = Modifier.size(96.dp)
         )
-        Text(stringResource(id = noTasksLabel))
+        Text(filterType.noTasksLabel())
     }
 }
 
@@ -265,9 +258,7 @@ private fun TasksContentPreview() {
                         id = "ID 5"
                     ),
                 ),
-                currentFilteringLabel = R.string.label_all,
-                noTasksLabel = R.string.no_tasks_all,
-                noTasksIconRes = R.drawable.logo_no_fill,
+                filterType = ALL_TASKS,
                 onRefresh = { },
                 onTaskClick = { },
                 onTaskCheckedChange = { _, _ -> },
@@ -284,9 +275,7 @@ private fun TasksContentEmptyPreview() {
             TasksContent(
                 loading = false,
                 tasks = emptyList(),
-                currentFilteringLabel = R.string.label_all,
-                noTasksLabel = R.string.no_tasks_all,
-                noTasksIconRes = R.drawable.logo_no_fill,
+                filterType = ALL_TASKS,
                 onRefresh = { },
                 onTaskClick = { },
                 onTaskCheckedChange = { _, _ -> },
@@ -301,8 +290,7 @@ private fun TasksEmptyContentPreview() {
     TodoTheme {
         Surface {
             TasksEmptyContent(
-                noTasksLabel = R.string.no_tasks_all,
-                noTasksIconRes = R.drawable.logo_no_fill
+                filterType = ALL_TASKS
             )
         }
     }
