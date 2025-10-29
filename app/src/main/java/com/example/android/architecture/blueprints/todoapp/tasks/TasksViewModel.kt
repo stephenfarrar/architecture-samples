@@ -16,9 +16,17 @@
 
 package com.example.android.architecture.blueprints.todoapp.tasks
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.SavedStateHandleSaveableApi
+import androidx.lifecycle.viewmodel.compose.saveable
 import com.example.android.architecture.blueprints.todoapp.ADD_EDIT_RESULT_OK
 import com.example.android.architecture.blueprints.todoapp.DELETE_RESULT_OK
 import com.example.android.architecture.blueprints.todoapp.EDIT_RESULT_OK
@@ -31,11 +39,8 @@ import com.example.android.architecture.blueprints.todoapp.tasks.TasksFilterType
 import com.example.android.architecture.blueprints.todoapp.util.Async
 import com.example.android.architecture.blueprints.todoapp.util.WhileUiSubscribed
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -44,69 +49,72 @@ import javax.inject.Inject
 /**
  * UiState for the task list screen.
  */
-data class TasksUiState(
-    val items: List<Task> = emptyList(),
-    val isLoading: Boolean = false,
-    val filteringUiInfo: FilteringUiInfo = FilteringUiInfo(),
-    val userMessage: Int? = null
-)
+interface TasksUiState {
+    val items: List<Task>
+    val isLoading: Boolean
+    val filteringUiInfo: FilteringUiInfo
+    val userMessage: Int?
+}
 
 /**
  * ViewModel for the task list screen.
  */
+@OptIn(SavedStateHandleSaveableApi::class)
 @HiltViewModel
 class TasksViewModel @Inject constructor(
     private val taskRepository: TaskRepository,
-    private val savedStateHandle: SavedStateHandle
+    savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
-    private val _savedFilterType =
-        savedStateHandle.getStateFlow(TASKS_FILTER_SAVED_STATE_KEY, ALL_TASKS)
+    var filterType: TasksFilterType by savedStateHandle.saveable { mutableStateOf(ALL_TASKS) }
 
-    private val _filterUiInfo = _savedFilterType.map { getFilterUiInfo(it) }.distinctUntilChanged()
-    private val _userMessage: MutableStateFlow<Int?> = MutableStateFlow(null)
-    private val _isLoading = MutableStateFlow(false)
-    private val _filteredTasksAsync =
-        combine(taskRepository.getTasksStream(), _savedFilterType) { tasks, type ->
-            filterTasks(tasks, type)
-        }
-            .map { Async.Success(it) }
-            .catch<Async<List<Task>>> { emit(Async.Error(R.string.loading_tasks_error)) }
+    var userMessage: Int? by mutableStateOf(null)
+        private set
 
-    val uiState: StateFlow<TasksUiState> = combine(
-        _filterUiInfo, _isLoading, _userMessage, _filteredTasksAsync
-    ) { filterUiInfo, isLoading, userMessage, tasksAsync ->
-        when (tasksAsync) {
-            Async.Loading -> {
-                TasksUiState(isLoading = true)
-            }
-            is Async.Error -> {
-                TasksUiState(userMessage = tasksAsync.errorMessage)
-            }
-            is Async.Success -> {
-                TasksUiState(
-                    items = tasksAsync.data,
-                    filteringUiInfo = filterUiInfo,
-                    isLoading = isLoading,
-                    userMessage = userMessage
-                )
-            }
-        }
+    var isLoading: Boolean by mutableStateOf(false)
+        private set
+
+    val tasksAsyncFlow: StateFlow<Async<List<Task>>> = taskRepository.getTasksStream()
+        .map { Async.Success(it) }
+        .catch<Async<List<Task>>> { emit(Async.Error(R.string.loading_tasks_error)) }
+        .stateIn(viewModelScope, WhileUiSubscribed, initialValue = Async.Loading)
+
+    @Composable
+    fun uiState(): TasksUiState {
+        val tasksAsync by tasksAsyncFlow.collectAsStateWithLifecycle()
+        return remember { UiState(tasksAsync = { tasksAsync }) }
     }
-        .stateIn(
-            scope = viewModelScope,
-            started = WhileUiSubscribed,
-            initialValue = TasksUiState(isLoading = true)
-        )
 
-    fun setFiltering(requestType: TasksFilterType) {
-        savedStateHandle[TASKS_FILTER_SAVED_STATE_KEY] = requestType
+    /** This is the UI state logic, which we only want to execute when the UI is present. */
+    private inner class UiState(
+        val tasksAsync: () -> Async<List<Task>>
+    ): TasksUiState {
+        override val isLoading: Boolean
+            get() = this@TasksViewModel.isLoading
+
+        override val userMessage: Int?
+            get() = when (val tasks = tasksAsync()) {
+                is Async.Loading -> null
+                is Async.Error -> tasks.errorMessage
+                is Async.Success ->
+                this@TasksViewModel.userMessage
+            }
+
+        override val items: List<Task>
+            get() =
+                when (val allItems = tasksAsync()) {
+                    is Async.Success -> filterTasks(allItems.data, filterType)
+                    else -> emptyList()
+                }
+
+        override val filteringUiInfo: FilteringUiInfo
+            get() = getFilterUiInfo(filterType)
     }
 
     fun clearCompletedTasks() {
         viewModelScope.launch {
             taskRepository.clearCompletedTasks()
-            showSnackbarMessage(R.string.completed_tasks_cleared)
+            userMessage = R.string.completed_tasks_cleared
             refresh()
         }
     }
@@ -114,34 +122,36 @@ class TasksViewModel @Inject constructor(
     fun completeTask(task: Task, completed: Boolean) = viewModelScope.launch {
         if (completed) {
             taskRepository.completeTask(task.id)
-            showSnackbarMessage(R.string.task_marked_complete)
+            userMessage = R.string.task_marked_complete
         } else {
             taskRepository.activateTask(task.id)
-            showSnackbarMessage(R.string.task_marked_active)
+            userMessage = R.string.task_marked_active
         }
     }
 
     fun showEditResultMessage(result: Int) {
         when (result) {
-            EDIT_RESULT_OK -> showSnackbarMessage(R.string.successfully_saved_task_message)
-            ADD_EDIT_RESULT_OK -> showSnackbarMessage(R.string.successfully_added_task_message)
-            DELETE_RESULT_OK -> showSnackbarMessage(R.string.successfully_deleted_task_message)
+            EDIT_RESULT_OK -> {
+                userMessage = R.string.successfully_saved_task_message
+            }
+            ADD_EDIT_RESULT_OK -> {
+                userMessage = R.string.successfully_added_task_message
+            }
+            DELETE_RESULT_OK -> {
+                userMessage = R.string.successfully_deleted_task_message
+            }
         }
     }
 
     fun snackbarMessageShown() {
-        _userMessage.value = null
-    }
-
-    private fun showSnackbarMessage(message: Int) {
-        _userMessage.value = message
+        userMessage = null
     }
 
     fun refresh() {
-        _isLoading.value = true
+        isLoading = true
         viewModelScope.launch {
             taskRepository.refresh()
-            _isLoading.value = false
+            isLoading = false
         }
     }
 
@@ -162,6 +172,7 @@ class TasksViewModel @Inject constructor(
         return tasksToShow
     }
 
+    // TODO: move this to the UI, or make it @Composable
     private fun getFilterUiInfo(requestType: TasksFilterType): FilteringUiInfo =
         when (requestType) {
             ALL_TASKS -> {
@@ -184,9 +195,6 @@ class TasksViewModel @Inject constructor(
             }
         }
 }
-
-// Used to save the current filtering in SavedStateHandle.
-const val TASKS_FILTER_SAVED_STATE_KEY = "TASKS_FILTER_SAVED_STATE_KEY"
 
 data class FilteringUiInfo(
     val currentFilteringLabel: Int = R.string.label_all,
