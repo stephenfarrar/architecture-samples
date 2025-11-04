@@ -20,11 +20,9 @@ import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -50,51 +48,37 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/**
- * UiState for the task list screen.
- */
-interface TasksUiState {
-    val items: List<Task>
-    val isLoading: Boolean
-    val userMessage: Int?
-}
-
-/** Obtains the [TasksUiState]. */
-// NOTE(step): An alternative factorization would be make the properties on [TasksUiState] into
-// @Composable functions. Then you can obtain an instance of TasksUiState without needing to be
-// @Composable. Perhaps I would prefer that.
+/** Returns whether the UI is currently in a loading state. */
 @Composable
-fun rememberTasksUiState(vm: TasksViewModel = hiltViewModel()): TasksUiState {
-    val tasksAsyncState = vm.tasksAsyncFlow.collectAsStateWithLifecycle()
-    return remember(vm, tasksAsyncState) { TasksUiStateImpl(vm) { tasksAsyncState.value } }
+fun TasksViewModel.isLoading(): Boolean {
+    val tasksAsync by tasksAsyncFlow.collectAsStateWithLifecycle()
+    return isLoading || tasksAsync is Async.Loading
 }
 
-/** Interprets how to display state from the [TasksViewModel]. */
-private class TasksUiStateImpl(
-    val vm: TasksViewModel,
-    val tasksAsync: () -> Async<List<Task>>
-): TasksUiState {
-    override val isLoading: Boolean
-        // NOTE(step): I find this easier to reason about than lines 81 and 90 of
-        // https://github.com/android/architecture-samples/blob/ee66e1526b84c026615df032c705842b7d2a521f/app/src/main/java/com/example/android/architecture/blueprints/todoapp/tasks/TasksViewModel.kt#L81
-        get() = tasksAsync() is Async.Loading || vm.isLoading
+/** Returns the user message the UI should display. */
+@Composable
+fun TasksViewModel.userMessage(): Int? {
+    val tasksAsync by tasksAsyncFlow.collectAsStateWithLifecycle()
+    return when (val tasksAsync = tasksAsync) {
+        // NOTE(step): This is the current logic, but I don't think it's correct to suppress
+        // the userMessage. The screen calls `currentOnUserMessageDisplayed()` as though setting the
+        // userMessage is enough to display it.
+        is Async.Loading -> null
+        is Async.Error -> tasksAsync.errorMessage
+        is Async.Success -> userMessage
+    }
+}
 
-    override val userMessage: Int?
-        get() = when (val tasks = tasksAsync()) {
-            // NOTE(step): This is the current logic, but I don't think it's correct to suppress
-            // the userMessage. Not when the screen calls `currentOnUserMessageDisplayed()` as
-            // though setting the userMessage is enough to display it.
-            is Async.Loading -> null
-            is Async.Error -> tasks.errorMessage
-            is Async.Success -> vm.userMessage
-        }
-
-    override val items: List<Task>
-        get() =
-            when (val allItems = tasksAsync()) {
-                is Async.Success -> filterTasks(allItems.data, vm.filterType)
-                else -> emptyList()
-            }
+/** Returns the list of items the UI should display. */
+@Composable
+fun TasksViewModel.items(): List<Task> {
+    val tasksAsync = tasksAsyncFlow.collectAsStateWithLifecycle().value
+    if (tasksAsync !is Async.Success) return emptyList()
+    return when (filterType) {
+        ALL_TASKS -> tasksAsync.data
+        ACTIVE_TASKS -> tasksAsync.data.filter { it.isActive }
+        COMPLETED_TASKS -> tasksAsync.data.filter { it.isCompleted }
+    }
 }
 
 /** Returns the message ID corresponding to the edit result ID. */
@@ -126,23 +110,6 @@ fun TasksFilterType.noTasksIconPainter() = painterResource(when(this) {
     ACTIVE_TASKS -> R.drawable.ic_check_circle_96dp
     COMPLETED_TASKS -> R.drawable.ic_verified_user_96dp
 })
-
-private fun filterTasks(tasks: List<Task>, filteringType: TasksFilterType): List<Task> {
-    val tasksToShow = ArrayList<Task>()
-    // We filter the tasks based on the requestType
-    for (task in tasks) {
-        when (filteringType) {
-            ALL_TASKS -> tasksToShow.add(task)
-            ACTIVE_TASKS -> if (task.isActive) {
-                tasksToShow.add(task)
-            }
-            COMPLETED_TASKS -> if (task.isCompleted) {
-                tasksToShow.add(task)
-            }
-        }
-    }
-    return tasksToShow
-}
 
 /** Holder of fragment-retained state for the Tasks UI. */
 @OptIn(SavedStateHandleSaveableApi::class)

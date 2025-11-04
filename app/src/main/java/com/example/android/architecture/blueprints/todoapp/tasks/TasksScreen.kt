@@ -90,11 +90,9 @@ fun TasksScreen(
             }
         }
     ) { paddingValues ->
-        val uiState = rememberTasksUiState()
-
         TasksContent(
-            loading = uiState.isLoading,
-            tasks = uiState.items,
+            loading = viewModel.isLoading(),
+            tasks = viewModel.items(),
             filterType = viewModel.filterType,
             onRefresh = viewModel::refresh,
             onTaskClick = onTaskClick,
@@ -103,7 +101,7 @@ fun TasksScreen(
         )
 
         // Check for user messages to display on the screen
-        uiState.userMessage?.let { message ->
+        viewModel.userMessage()?.let { message ->
             val snackbarText = stringResource(message)
             LaunchedEffect(snackbarHostState, viewModel, message, snackbarText) {
                 snackbarHostState.showSnackbar(snackbarText)
