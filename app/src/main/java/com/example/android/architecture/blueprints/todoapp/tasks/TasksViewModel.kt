@@ -48,36 +48,29 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** Returns whether the UI is currently in a loading state. */
-@Composable
-fun TasksViewModel.isLoading(): Boolean {
-    val tasksAsync by tasksAsyncFlow.collectAsStateWithLifecycle()
-    return isLoading || tasksAsync is Async.Loading
-}
+/** UI state for the Task List screen. */
+data class TasksUiState(
+    val isLoading: Boolean = false,
+    val userMessage: Int? = null,
+    val items: List<Task> = emptyList(),
+)
 
-/** Returns the user message the UI should display. */
+/** Generates the UI state from the ViewModel. This replaces the Flow.combine(). */
 @Composable
-fun TasksViewModel.userMessage(): Int? {
+fun TasksViewModel.uiState(): TasksUiState {
     val tasksAsync by tasksAsyncFlow.collectAsStateWithLifecycle()
     return when (val tasksAsync = tasksAsync) {
-        // NOTE(step): This is the current logic, but I don't think it's correct to suppress
-        // the userMessage. The screen calls `currentOnUserMessageDisplayed()` as though setting the
-        // userMessage is enough to display it.
-        is Async.Loading -> null
-        is Async.Error -> tasksAsync.errorMessage
-        is Async.Success -> userMessage
-    }
-}
-
-/** Returns the list of items the UI should display. */
-@Composable
-fun TasksViewModel.items(): List<Task> {
-    val tasksAsync = tasksAsyncFlow.collectAsStateWithLifecycle().value
-    if (tasksAsync !is Async.Success) return emptyList()
-    return when (filterType) {
-        ALL_TASKS -> tasksAsync.data
-        ACTIVE_TASKS -> tasksAsync.data.filter { it.isActive }
-        COMPLETED_TASKS -> tasksAsync.data.filter { it.isCompleted }
+        is Async.Loading -> TasksUiState(isLoading = true)
+        is Async.Error -> TasksUiState(userMessage = tasksAsync.errorMessage)
+        is Async.Success -> TasksUiState(
+            isLoading = isLoading,
+            userMessage = userMessage,
+            items = when (filterType) {
+                ALL_TASKS -> tasksAsync.data
+                ACTIVE_TASKS -> tasksAsync.data.filter { it.isActive }
+                COMPLETED_TASKS -> tasksAsync.data.filter { it.isCompleted }
+            },
+        )
     }
 }
 
